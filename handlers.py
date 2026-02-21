@@ -2,7 +2,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import ContextTypes
 from database import Database
 from ai_complete import AIAssistant
-from image_handler import ImageHandler
+from image_manager import ImageManager
 from import_export import TextImporter, CardExporter
 from datetime import datetime
 import random
@@ -10,7 +10,7 @@ import os
 
 db = Database()
 ai_complete = AIAssistant(api_key=os.getenv("OPENAI_API_KEY"))
-image_handler = ImageHandler()
+image_manager = ImageManager()
 
 # Сохраняем текущее состояние пользователя
 user_states = {}
