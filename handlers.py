@@ -1,438 +1,745 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ContextTypes, ConversationTypes
 from database import Database
-from datetime import datetime
+from study_modes import StudyModes
+from spaced_repetition import SpacedRepetition
+from gamification import Gamification
+from datetime import datetime, timedelta
 import random
 
 db = Database()
-
-# Сохраняем текущее состояние пользователя
 user_states = {}
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /start - начало работы"""
+# Состояния для ConversationHandler
+(
+    MAIN_MENU, CREATE_DECK, ADD_CARD, STUDY_SELECT_MODE,
+    STUDY_WRITE, STUDY_QUIZ, STUDY_FLASHCARD, DECK_MENU,
+    EDIT_CARD, SETTINGS, IMPORT_CARDS, BROWSE_DICTIONARY
+) = range(12)
+
+# ==================== ГЛАВНОЕ МЕНЮ ====================
+
+def get_main_menu_keyboard():
+    """Главное меню"""
+    keyboard = [
+        [InlineKeyboardButton("📚 Мои колоды", callback_data="my_decks")],
+        [InlineKeyboardButton("➕ Создать колоду", callback_data="create_deck")],
+        [InlineKeyboardButton("📖 Общий словарь", callback_data="browse_dict")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="my_stats")],
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="settings")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="help")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Старт"""
     user_id = update.effective_user.id
     username = update.effective_user.username
     
     db.add_user(user_id, username)
-    user_states[user_id] = {'mode': 'main'}
+    Gamification.init_user(user_id)
     
     welcome_text = """
 🎓 *Добро пожаловать в QuizletBot!*
 
-Это бот для создания и изучения карточек со словами, определениями и вопросами.
+Я помогу вам эффективно учить слова с помощью:
+• 🎴 Карточек с переворотом
+• ✍️ Письменных упражнений  
+• 🎯 Тестов с вариантами
+• 🧠 Интервального повторения
+• 🎮 Игровых механик
 
-*Основные команды:*
-/help - Справка по командам
-/decks - Мои колоды
-/stats - Статистика обучения
-
-Начни с команды /decks или создай новую колоду прямо сейчас! 📚
+*Выберите действие ниже:*
     """
     
-    keyboard = [
-        [InlineKeyboardButton("📚 Мои колоды", callback_data="view_decks")],
-        [InlineKeyboardButton("➕ Создать колоду", callback_data="create_deck")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    if update.message:
+        await update.message.reply_text(welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
+    else:
+        await update.callback_query.edit_message_text(welcome_text, reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
     
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="Markdown")
+    return MAIN_MENU
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /help - справка"""
-    help_text = """
-*📖 СПРАВКА ПО КОМАНДАМ*
-
-*/start* - Начало работы
-*/help* - Эта справка
-*/decks* - Список ваших колод
-*/stats* - Статистика обучения
-
-*ОСНОВНЫЕ ВОЗМОЖНОСТИ:*
-
-1️⃣ *Создание колоды*
-   - Выберите "Создать колоду"
-   - Введите название
-   - Добавляйте карточки (вопрос + ответ)
-
-2️⃣ *Обучение*
-   - Выберите колоду
-   - Переворачивайте карточки
-   - Отмечайте "знаю" или "не знаю"
-
-Начните обучение прямо сейчас! 🚀
-    """
-    
-    await update.message.reply_text(help_text, parse_mode="Markdown")
-
-async def view_decks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /decks - просмотр колод"""
-    user_id = update.effective_user.id
-    decks = db.get_user_decks(user_id)
-    
-    if not decks:
-        keyboard = [[InlineKeyboardButton("➕ Создать колоду", callback_data="create_deck")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "У вас нет колод. Создайте первую! 📚",
-            reply_markup=reply_markup
-        )
-        return
-    
-    text = "📚 *Ваши колоды:*\n\n"
-    keyboard = []
-    
-    for deck in decks:
-        text += f"• *{deck['name']}* ({deck['card_count']} карточек)\n"
-        keyboard.append([
-            InlineKeyboardButton(f"📖 {deck['name']}", callback_data=f"deck_{deck['deck_id']}")
-        ])
-    
-    keyboard.append([InlineKeyboardButton("➕ Создать колоду", callback_data="create_deck")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-
-async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /stats - статистика"""
-    user_id = update.effective_user.id
-    stats = db.get_user_stats(user_id)
-    
-    last_studied = stats.get('last_studied', 'Никогда')
-    if last_studied and last_studied != 'Никогда':
-        last_studied = datetime.fromisoformat(last_studied).strftime('%d.%m.%Y %H:%M')
-    
-    text = f"""
-📊 *Ваша статистика обучения:*
-
-🎯 Колод создано: {stats['decks_count']}
-📝 Карточек изучено: {stats['total_studied']}
-✅ Правильных ответов: {stats['total_correct']}
-📈 Всего попыток: {stats['total_attempts']}
-🎓 Точность: {stats['accuracy']}%
-🕐 Последнее обучение: {last_studied}
-    """
-    
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик нажатий на кнопки"""
+async def main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка главного меню"""
     query = update.callback_query
     await query.answer()
-    
-    user_id = query.from_user.id
     data = query.data
+    user_id = query.from_user.id
     
-    if data == "create_deck":
-        user_states[user_id] = {'mode': 'creating_deck'}
-        await query.edit_message_text(text="📝 Введите название для новой колоды:")
+    if data == "my_decks":
+        return await show_decks_menu(update, context)
+    elif data == "create_deck":
+        return await start_create_deck(update, context)
+    elif data == "browse_dict":
+        return await browse_dictionary(update, context)
+    elif data == "my_stats":
+        return await show_full_stats(update, context)
+    elif data == "settings":
+        return await show_settings(update, context)
+    elif data == "help":
+        return await show_help(update, context)
+    elif data == "main_menu":
+        return await start(update, context)
     
-    elif data == "view_decks":
-        await view_decks_callback(query, user_id)
-    
-    elif data.startswith("deck_"):
-        deck_id = int(data.split("_")[1])
-        await view_deck_detail(query, user_id, deck_id)
-    
-    elif data.startswith("study_"):
-        deck_id = int(data.split("_")[1])
-        await start_study_mode(query, user_id, deck_id)
-    
-    elif data == "flip_card":
-        await flip_card(query, user_id)
-    
-    elif data == "answer_correct":
-        await answer_correct(query, user_id)
-    
-    elif data == "answer_wrong":
-        await answer_wrong(query, user_id)
-    
-    elif data == "stop_study":
-        await stop_study(query, user_id)
-    
-    elif data.startswith("add_card_"):
-        deck_id = int(data.split("_")[2])
-        user_states[user_id] = {'mode': 'adding_cards', 'deck_id': deck_id}
-        await query.edit_message_text(
-            "📝 Добавляйте карточки\nФормат: *Вопрос | Ответ*\n\nВведите 'готово' когда закончите."
-        )
-    
-    elif data.startswith("list_cards_"):
-        deck_id = int(data.split("_")[2])
-        await list_cards_callback(query, deck_id)
-    
-    elif data.startswith("delete_card_"):
-        parts = data.split("_")
-        card_id = int(parts[2])
-        deck_id = int(parts[3]) if len(parts) > 3 else None
-        await delete_card_callback(query, user_id, card_id, deck_id)
-    
-    elif data.startswith("delete_deck_"):
-        deck_id = int(data.split("_")[2])
-        await delete_deck_callback(query, user_id, deck_id)
-    
-    elif data.startswith("confirm_delete_deck_"):
-        deck_id = int(data.split("_")[3])
-        db.delete_deck(deck_id, user_id)
-        await query.edit_message_text("✅ Колода удалена! 🗑")
-        await view_decks_callback(query, user_id)
-    
-    elif data == "stats":
-        stats = db.get_user_stats(user_id)
-        text = f"""
-📊 *Ваша статистика:*
+    return MAIN_MENU
 
-🎯 Колод: {stats['decks_count']}
-📝 Изучено карточек: {stats['total_studied']}
-✅ Правильных ответов: {stats['total_correct']}
-📈 Всего попыток: {stats['total_attempts']}
-🎓 Точность: {stats['accuracy']}%
-        """
-        keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data="view_decks")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+# ==================== МОИ КОЛОДЫ ====================
 
-async def view_decks_callback(query, user_id):
-    """Просмотр колод в callback"""
+async def show_decks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать меню колод"""
+    user_id = update.effective_user.id
     decks = db.get_user_decks(user_id)
     
     if not decks:
-        keyboard = [[InlineKeyboardButton("➕ Создать", callback_data="create_deck")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text="У вас нет колод. Создайте первую! 📚", reply_markup=reply_markup)
-        return
+        keyboard = [
+            [InlineKeyboardButton("➕ Создать первую колоду", callback_data="create_deck")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+        ]
+        await update.callback_query.edit_message_text(
+            "📚 У вас пока нет колод.\n\nСоздайте первую колоду или выберите из общего словаря!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return MAIN_MENU
     
     text = "📚 *Ваши колоды:*\n\n"
     keyboard = []
     
     for deck in decks:
-        text += f"📖 *{deck['name']}* - {deck['card_count']} карточек\n"
-        keyboard.append([InlineKeyboardButton(f"👉 {deck['name']}", callback_data=f"deck_{deck['deck_id']}")])
+        progress = SpacedRepetition.get_deck_progress(user_id, deck['deck_id'])
+        text += f"📖 *{deck['name']}*\n"
+        text += f"   📝 {deck['card_count']} карточек | 📊 {progress}% выучено\n\n"
+        keyboard.append([InlineKeyboardButton(f"📖 {deck['name']}", callback_data=f"deck_menu_{deck['deck_id']}")])
     
     keyboard.append([InlineKeyboardButton("➕ Создать колоду", callback_data="create_deck")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")])
+    
+    await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return MAIN_MENU
 
-async def view_deck_detail(query, user_id, deck_id):
-    """Просмотр деталей колоды"""
-    deck_info = db.get_deck_info(deck_id)
+# ==================== МЕНЮ КОЛОДЫ ====================
+
+async def deck_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню конкретной колоды"""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user_id = query.from_user.id
     
-    if not deck_info:
-        await query.edit_message_text("Колода не найдена 😕")
-        return
-    
-    text = f"""
+    if data.startswith("deck_menu_"):
+        deck_id = int(data.split("_")[2])
+        context.user_data['current_deck_id'] = deck_id
+        
+        deck_info = db.get_deck_info(deck_id)
+        cards = db.get_deck_cards(deck_id)
+        
+        # Статистика по колоде
+        stats = SpacedRepetition.get_detailed_stats(user_id, deck_id)
+        
+        text = f"""
 📖 *{deck_info['name']}*
 
-Карточек: {deck_info['card_count']}
-Создана: {datetime.fromisoformat(deck_info['created_at']).strftime('%d.%m.%Y')}
+📝 Всего карточек: {len(cards)}
+✅ Выучено: {stats['mastered']}
+🔄 На изучении: {stats['learning']}
+⏰ На повторении: {stats['review']}
+📊 Прогресс: {stats['progress']}%
+
+*Выберите действие:*
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("🎓 Учиться", callback_data=f"study_select_{deck_id}")],
+            [InlineKeyboardButton("🎴 Режим карточек", callback_data=f"study_flash_{deck_id}")],
+            [InlineKeyboardButton("✍️ Письменный режим", callback_data=f"study_write_{deck_id}")],
+            [InlineKeyboardButton("🎯 Тест", callback_data=f"study_quiz_{deck_id}")],
+            [InlineKeyboardButton("🎮 Смешанный режим", callback_data=f"study_mixed_{deck_id}")],
+            [InlineKeyboardButton("➕ Добавить карточки", callback_data=f"add_cards_{deck_id}")],
+            [InlineKeyboardButton("📋 Список карточек", callback_data=f"list_cards_{deck_id}")],
+            [InlineKeyboardButton("🗑 Удалить колоду", callback_data=f"delete_deck_{deck_id}")],
+            [InlineKeyboardButton("⬅️ Назад к колодам", callback_data="my_decks")]
+        ]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return DECK_MENU
+    
+    elif data.startswith("study_select_"):
+        return await select_study_mode(update, context)
+    elif data.startswith("study_flash_"):
+        return await start_flashcard_mode(update, context)
+    elif data.startswith("study_write_"):
+        return await start_write_mode(update, context)
+    elif data.startswith("study_quiz_"):
+        return await start_quiz_mode(update, context)
+    elif data.startswith("study_mixed_"):
+        return await start_mixed_mode(update, context)
+    elif data.startswith("add_cards_"):
+        return await start_add_cards(update, context)
+    elif data.startswith("list_cards_"):
+        return await list_cards(update, context)
+    elif data.startswith("delete_deck_"):
+        return await confirm_delete_deck(update, context)
+
+# ==================== РЕЖИМЫ ОБУЧЕНИЯ ====================
+
+async def select_study_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Выбор режима обучения"""
+    query = update.callback_query
+    deck_id = int(query.data.split("_")[2])
+    context.user_data['current_deck_id'] = deck_id
+    
+    text = """
+🎓 *Выберите режим обучения:*
+
+🎴 *Карточки* - переворачивайте и оценивайте
+✍️ *Письменный* - вводите ответ с клавиатуры
+🎯 *Тест* - выбирайте из 4 вариантов
+🎮 *Смешанный* - случайный режим каждый раз
+🧠 *Интервалы* - умное повторение по алгоритму
     """
     
     keyboard = [
-        [InlineKeyboardButton("🎓 Учиться", callback_data=f"study_{deck_id}")],
-        [InlineKeyboardButton("➕ Добавить карточку", callback_data=f"add_card_{deck_id}")],
-        [InlineKeyboardButton("📋 Все карточки", callback_data=f"list_cards_{deck_id}")],
-        [InlineKeyboardButton("🗑 Удалить колоду", callback_data=f"delete_deck_{deck_id}")],
-        [InlineKeyboardButton("⬅ Назад", callback_data="view_decks")]
+        [InlineKeyboardButton("🎴 Карточки", callback_data=f"study_flash_{deck_id}")],
+        [InlineKeyboardButton("✍️ Письменный", callback_data=f"study_write_{deck_id}")],
+        [InlineKeyboardButton("🎯 Тест", callback_data=f"study_quiz_{deck_id}")],
+        [InlineKeyboardButton("🎮 Смешанный", callback_data=f"study_mixed_{deck_id}")],
+        [InlineKeyboardButton("🧠 Интервалы", callback_data=f"study_interval_{deck_id}")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data=f"deck_menu_{deck_id}")]
     ]
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return STUDY_SELECT_MODE
 
-async def start_study_mode(query, user_id, deck_id):
-    """Начало режима обучения"""
-    cards = db.get_deck_cards(deck_id)
+# Режим карточек (переворот)
+async def start_flashcard_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    deck_id = int(query.data.split("_")[2])
+    user_id = query.from_user.id
+    
+    cards = StudyModes.prepare_cards(user_id, deck_id, mode='flashcard')
     
     if not cards:
-        await query.edit_message_text("В этой колоде нет карточек! Добавьте их сначала. 📝")
-        return
+        await query.edit_message_text("В колоде нет карточек! Добавьте их сначала.")
+        return DECK_MENU
     
-    random.shuffle(cards)
-    
-    user_states[user_id] = {
-        'mode': 'studying',
+    context.user_data['study_session'] = {
+        'mode': 'flashcard',
         'deck_id': deck_id,
         'cards': cards,
-        'current_card_index': 0,
-        'correct_count': 0,
-        'total_count': len(cards),
+        'current': 0,
+        'correct': 0,
+        'wrong': 0,
         'flipped': False
     }
     
-    await show_study_card(query, user_id)
+    await show_flashcard(query, user_id)
+    return STUDY_FLASHCARD
 
-async def show_study_card(query, user_id):
-    """Показать текущую карточку"""
-    state = user_states.get(user_id, {})
-    cards = state.get('cards', [])
-    index = state.get('current_card_index', 0)
+async def show_flashcard(query, user_id):
+    session = user_states[user_id]['study_session']
+    card = session['cards'][session['current']]
+    total = len(session['cards'])
+    current = session['current'] + 1
     
-    if index >= len(cards):
-        await show_study_results(query, user_id)
-        return
-    
-    card = cards[index]
-    is_flipped = state.get('flipped', False)
-    progress = f"Карточка {index + 1}/{len(cards)}"
-    
-    if is_flipped:
-        text = f"{progress}\n\n🔄 *ОТВЕТ:*\n\n*{card['answer']}*"
+    if session['flipped']:
+        text = f"""
+🎴 *Карточка {current}/{total}*
+
+❓ {card['question']}
+
+✅ *Ответ:* {card['answer']}
+
+*Оцените, как хорошо вы знали:*
+        """
+        keyboard = [
+            [
+                InlineKeyboardButton("😞 Снова", callback_data="rate_again"),
+                InlineKeyboardButton("😐 Трудно", callback_data="rate_hard"),
+                InlineKeyboardButton("🙂 Хорошо", callback_data="rate_good"),
+                InlineKeyboardButton("😄 Легко", callback_data="rate_easy")
+            ]
+        ]
     else:
-        text = f"{progress}\n\n❓ *ВОПРОС:*\n\n*{card['question']}*"
+        text = f"""
+🎴 *Карточка {current}/{total}*
+
+❓ *{card['question']}*
+
+        """
+        keyboard = [[InlineKeyboardButton("🔄 Показать ответ", callback_data="flip_card")]]
     
-    keyboard = []
-    if not is_flipped:
-        keyboard.append([InlineKeyboardButton("🔄 Показать ответ", callback_data="flip_card")])
-    else:
-        keyboard.append([
-            InlineKeyboardButton("❌ Не знаю", callback_data="answer_wrong"),
-            InlineKeyboardButton("✅ Знаю", callback_data="answer_correct")
-        ])
     keyboard.append([InlineKeyboardButton("⏹ Завершить", callback_data="stop_study")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def show_study_results(query, user_id):
-    """Показать результаты обучения"""
-    state = user_states.get(user_id, {})
-    correct = state.get('correct_count', 0)
-    total = state.get('total_count', 0)
-    deck_id = state.get('deck_id')
+# Письменный режим
+async def start_write_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    deck_id = int(query.data.split("_")[2])
+    user_id = query.from_user.id
     
-    percentage = round((correct / total * 100) if total > 0 else 0, 1)
-    db.record_study_session(user_id, deck_id, correct, total)
+    cards = StudyModes.prepare_cards(user_id, deck_id, mode='write')
+    
+    if not cards:
+        await query.edit_message_text("В колоде нет карточек!")
+        return DECK_MENU
+    
+    context.user_data['study_session'] = {
+        'mode': 'write',
+        'deck_id': deck_id,
+        'cards': cards,
+        'current': 0,
+        'correct': 0,
+        'wrong': 0
+    }
+    
+    await ask_write_question(query, user_id)
+    return STUDY_WRITE
+
+async def ask_write_question(query, user_id):
+    session = user_states[user_id]['study_session']
+    card = session['cards'][session['current']]
+    total = len(session['cards'])
+    current = session['current'] + 1
     
     text = f"""
-🎉 *Обучение завершено!*
+✍️ *Письменный режим {current}/{total}*
 
-✅ Правильно: {correct}
-❌ Неправильно: {total - correct}
-📊 Процент: {percentage}%
+❓ *{card['question']}*
+
+Напишите ответ сообщением:
+    """
+    
+    keyboard = [[InlineKeyboardButton("⏹ Завершить", callback_data="stop_study")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def check_write_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Проверка письменного ответа"""
+    user_id = update.effective_user.id
+    user_answer = update.message.text.strip().lower()
+    session = context.user_data.get('study_session')
+    
+    if not session or session['mode'] != 'write':
+        return MAIN_MENU
+    
+    card = session['cards'][session['current']]
+    correct_answer = card['answer'].strip().lower()
+    
+    # Проверка с учетом опечаток (расстояние Левенштейна)
+    similarity = StudyModes.calculate_similarity(user_answer, correct_answer)
+    
+    if similarity >= 0.8:  # 80% совпадение
+        session['correct'] += 1
+        SpacedRepetition.update_card_progress(user_id, card['card_id'], 'correct')
+        
+        # Очки и стрик
+        points = Gamification.add_points(user_id, 'correct_write')
+        streak = Gamification.update_streak(user_id)
+        
+        text = f"""
+✅ *Правильно!* +{points} очков
+        
+Ваш ответ: {user_answer}
+Правильный: {correct_answer}
+
+🔥 Серия: {streak}
+        """
+        keyboard = [[InlineKeyboardButton("➡️ Далее", callback_data="next_card")]]
+        
+    elif similarity >= 0.5:
+        session['correct'] += 0.5
+        text = f"""
+⚠️ *Почти правильно!*
+        
+Ваш ответ: {user_answer}
+Правильный: {correct_answer}
+
+Попробуйте еще раз или идите дальше?
+        """
+        keyboard = [
+            [InlineKeyboardButton("🔄 Повторить", callback_data="retry_card")],
+            [InlineKeyboardButton("➡️ Далее", callback_data="next_card")]
+        ]
+    else:
+        session['wrong'] += 1
+        SpacedRepetition.update_card_progress(user_id, card['card_id'], 'wrong')
+        
+        text = f"""
+❌ *Неправильно*
+        
+Ваш ответ: {user_answer}
+Правильный: *{correct_answer}*
+
+Попробуйте еще раз?
+        """
+        keyboard = [
+            [InlineKeyboardButton("🔄 Повторить", callback_data="retry_card")],
+            [InlineKeyboardButton("💡 Показать подсказку", callback_data="show_hint")],
+            [InlineKeyboardButton("➡️ Далее", callback_data="next_card")]
+        ]
+    
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return STUDY_WRITE
+
+# Тестовый режим
+async def start_quiz_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    deck_id = int(query.data.split("_")[2])
+    user_id = query.from_user.id
+    
+    cards = StudyModes.prepare_cards(user_id, deck_id, mode='quiz')
+    
+    if not cards:
+        await query.edit_message_text("В колоде нет карточек!")
+        return DECK_MENU
+    
+    context.user_data['study_session'] = {
+        'mode': 'quiz',
+        'deck_id': deck_id,
+        'cards': cards,
+        'current': 0,
+        'correct': 0,
+        'wrong': 0
+    }
+    
+    await show_quiz_question(query, user_id)
+    return STUDY_QUIZ
+
+async def show_quiz_question(query, user_id):
+    session = user_states[user_id]['study_session']
+    card = session['cards'][session['current']]
+    total = len(session['cards'])
+    current = session['current'] + 1
+    
+    # Генерируем варианты ответа
+    options = StudyModes.generate_quiz_options(card, session['cards'])
+    
+    text = f"""
+🎯 *Тест {current}/{total}*
+
+❓ *{card['question']}*
+
+Выберите правильный ответ:
+    """
+    
+    # Располагаем кнопки в 2 колонки
+    keyboard = []
+    row = []
+    for i, option in enumerate(options):
+        callback = "quiz_correct" if option == card['answer'] else f"quiz_wrong_{i}"
+        row.append(InlineKeyboardButton(option, callback_data=callback))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    
+    keyboard.append([InlineKeyboardButton("⏹ Завершить", callback_data="stop_study")])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+# Смешанный режим
+async def start_mixed_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    deck_id = int(query.data.split("_")[2])
+    user_id = query.from_user.id
+    
+    cards = StudyModes.prepare_cards(user_id, deck_id, mode='mixed')
+    
+    if not cards:
+        await query.edit_message_text("В колоде нет карточек!")
+        return DECK_MENU
+    
+    # Случайно выбираем режим для каждой карточки
+    for card in cards:
+        card['mode'] = random.choice(['flashcard', 'write', 'quiz'])
+    
+    context.user_data['study_session'] = {
+        'mode': 'mixed',
+        'deck_id': deck_id,
+        'cards': cards,
+        'current': 0,
+        'correct': 0,
+        'wrong': 0
+    }
+    
+    await show_mixed_card(query, user_id)
+
+async def show_mixed_card(query, user_id):
+    session = user_states[user_id]['study_session']
+    card = session['cards'][session['current']]
+    
+    if card['mode'] == 'flashcard':
+        await show_flashcard(query, user_id)
+    elif card['mode'] == 'write':
+        await ask_write_question(query, user_id)
+    else:
+        await show_quiz_question(query, user_id)
+
+# ==================== СОЗДАНИЕ КОЛОД ====================
+
+async def start_create_deck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начать создание колоды"""
+    query = update.callback_query
+    await query.answer()
+    
+    text = """
+➕ *Создание новой колоды*
+
+Введите название колоды:
+(например: "Английские слова", "География", "Медицина")
+    """
+    
+    await query.edit_message_text(text, parse_mode="Markdown")
+    return CREATE_DECK
+
+async def create_deck_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Получить название колоды"""
+    user_id = update.effective_user.id
+    deck_name = update.message.text.strip()
+    
+    if len(deck_name) < 2:
+        await update.message.reply_text("❌ Название слишком короткое. Введите еще раз:")
+        return CREATE_DECK
+    
+    deck_id = db.create_deck(user_id, deck_name)
+    context.user_data['new_deck_id'] = deck_id
+    context.user_data['new_deck_name'] = deck_name
+    
+    text = f"""
+✅ *Колода "{deck_name}" создана!*
+
+Теперь добавьте карточки.
+Формат: *Вопрос | Ответ*
+
+Примеры:
+• Hello | Привет
+• Столица Франции | Париж
+• 2 + 2 | 4
+
+Введите карточки по одной. Напишите "готово" когда закончите.
+    """
+    
+    keyboard = [[InlineKeyboardButton("❌ Отмена", callback_data="main_menu")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return ADD_CARD
+
+async def add_card_to_deck(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавить карточку в колоду"""
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    if text.lower() == 'готово':
+        return await finish_adding_cards(update, context)
+    
+    if '|' not in text:
+        await update.message.reply_text("❌ Неправильный формат! Используйте: *Вопрос | Ответ*")
+        return ADD_CARD
+    
+    parts = text.split('|', 1)
+    question = parts[0].strip()
+    answer = parts[1].strip()
+    
+    if not question or not answer:
+        await update.message.reply_text("❌ Вопрос и ответ не могут быть пустыми!")
+        return ADD_CARD
+    
+    deck_id = context.user_data.get('new_deck_id')
+    card_id = db.add_card(deck_id, question, answer)
+    
+    # Инициализируем прогресс карточки
+    SpacedRepetition.init_card(user_id, card_id)
+    
+    count = len(db.get_deck_cards(deck_id))
+    
+    text = f"""
+✅ *Карточка добавлена!* ({count} всего)
+
+❓ {question}
+✏️ {answer}
+
+Введите следующую или "готово"
+    """
+    
+    keyboard = [[InlineKeyboardButton("✅ Завершить", callback_data="finish_adding")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return ADD_CARD
+
+async def finish_adding_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Завершить добавление карточек"""
+    deck_id = context.user_data.get('new_deck_id')
+    deck_name = context.user_data.get('new_deck_name')
+    deck_info = db.get_deck_info(deck_id)
+    
+    text = f"""
+🎉 *Колода "{deck_name}" готова!*
+
+📊 Добавлено карточек: {deck_info['card_count']}
+
+Что дальше?
     """
     
     keyboard = [
-        [InlineKeyboardButton("🔄 Повторить", callback_data=f"study_{deck_id}")],
-        [InlineKeyboardButton("📚 Мои колоды", callback_data="view_decks")]
+        [InlineKeyboardButton("🎓 Начать учить", callback_data=f"study_select_{deck_id}")],
+        [InlineKeyboardButton("➕ Добавить еще", callback_data=f"add_cards_{deck_id}")],
+        [InlineKeyboardButton("📚 Мои колоды", callback_data="my_decks")]
     ]
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    user_states.pop(user_id, None)
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return MAIN_MENU
 
-async def flip_card(query, user_id):
-    """Переворот карточки"""
-    state = user_states.get(user_id, {})
-    state['flipped'] = not state.get('flipped', False)
-    await show_study_card(query, user_id)
+# ==================== СТАТИСТИКА ====================
 
-async def answer_correct(query, user_id):
-    """Правильный ответ"""
-    state = user_states.get(user_id, {})
-    state['correct_count'] = state.get('correct_count', 0) + 1
-    state['current_card_index'] = state.get('current_card_index', 0) + 1
-    state['flipped'] = False
-    await show_study_card(query, user_id)
-
-async def answer_wrong(query, user_id):
-    """Неправильный ответ"""
-    state = user_states.get(user_id, {})
-    state['current_card_index'] = state.get('current_card_index', 0) + 1
-    state['flipped'] = False
-    await show_study_card(query, user_id)
-
-async def stop_study(query, user_id):
-    """Завершение обучения"""
-    await show_study_results(query, user_id)
-
-async def list_cards_callback(query, deck_id):
-    """Показать все карточки колоды"""
-    cards = db.get_deck_cards(deck_id)
+async def show_full_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Полная статистика"""
+    query = update.callback_query
+    user_id = query.from_user.id
     
-    if not cards:
-        await query.edit_message_text("В этой колоде пока нет карточек 📝")
-        return
+    stats = Gamification.get_full_stats(user_id)
+    study_stats = db.get_user_stats(user_id)
     
-    text = "📋 *Все карточки:*\n\n"
-    keyboard = []
-    
-    for i, card in enumerate(cards, 1):
-        text += f"{i}. ❓ {card['question']}\n   ✏️ {card['answer']}\n\n"
-        keyboard.append([InlineKeyboardButton(f"🗑 Удалить #{i}", callback_data=f"delete_card_{card['card_id']}_{deck_id}")])
-    
-    keyboard.append([InlineKeyboardButton("⬅ Назад", callback_data=f"deck_{deck_id}")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    text = f"""
+📊 *Ваша статистика*
 
-async def delete_card_callback(query, user_id, card_id, deck_id):
-    """Удаление карточки"""
-    db.delete_card(card_id)
-    await query.edit_message_text("✅ Карточка удалена! 🗑")
-    if deck_id:
-        await list_cards_callback(query, deck_id)
-    else:
-        await view_decks_callback(query, user_id)
+🎯 *Общий прогресс:*
+• Колод создано: {study_stats['decks_count']}
+• Карточек выучено: {stats['mastered_cards']}
+• На изучении: {stats['learning_cards']}
+• Точность: {study_stats['accuracy']}%
 
-async def delete_deck_callback(query, user_id, deck_id):
-    """Удаление колоды с подтверждением"""
+🎮 *Игровая статистика:*
+• ⭐ Всего очков: {stats['total_points']}
+• 🔥 Текущая серия: {stats['current_streak']}
+• 🏆 Рекорд серии: {stats['max_streak']}
+• 📅 Дней подряд: {stats['study_days_streak']}
+
+📈 *Активность:*
+• Всего сессий: {study_stats['total_studied']}
+• Правильных ответов: {study_stats['total_correct']}
+• Последнее обучение: {study_stats.get('last_studied', 'Никогда')[:10] if study_stats.get('last_studied') else 'Никогда'}
+    """
+    
     keyboard = [
-        [
-            InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_delete_deck_{deck_id}"),
-            InlineKeyboardButton("❌ Отмена", callback_data=f"deck_{deck_id}")
-        ]
+        [InlineKeyboardButton("📊 Детальный прогресс", callback_data="detailed_progress")],
+        [InlineKeyboardButton("🏆 Достижения", callback_data="achievements")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("⚠️ Вы уверены? Это удалит колоду и все карточки!", reply_markup=reply_markup)
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return MAIN_MENU
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик текстовых сообщений"""
+# ==================== ОБЩИЙ СЛОВАРЬ ====================
+
+async def browse_dictionary(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Общий словарь"""
+    query = update.callback_query
+    
+    text = """
+📖 *Общий словарь*
+
+Выберите готовую коллекцию слов:
+    """
+    
+    # Предустановленные коллекции
+    collections = [
+        ("🇬🇧 Английский - базовые", "english_basic"),
+        ("🇬🇧 Английский - продвинутый", "english_advanced"),
+        ("🇩🇪 Немецкий - базовый", "german_basic"),
+        ("📊 Математика", "math_basic"),
+        ("🌍 География", "geography"),
+        ("🧬 Биология", "biology"),
+        ("💼 Бизнес термины", "business"),
+        ("💻 IT термины", "it_terms")
+    ]
+    
+    keyboard = []
+    for name, data in collections:
+        keyboard.append([InlineKeyboardButton(name, callback_data=f"import_collection_{data}")])
+    
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")])
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return BROWSE_DICTIONARY
+
+# ==================== НАСТРОЙКИ ====================
+
+async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Настройки"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    settings = db.get_user_settings(user_id)
+    
+    text = """
+⚙️ *Настройки*
+
+*Текущие параметры:*
+• 🔔 Уведомления: {'Вкл' if settings.get('notifications') else 'Выкл'}
+• 🎯 Сложность: {settings.get('difficulty', 'Средняя')}
+• 🎴 Карточек в сессии: {settings.get('cards_per_session', 20)}
+• ⏰ Время напоминания: {settings.get('reminder_time', '20:00')}
+    """
+    
+    keyboard = [
+        [InlineKeyboardButton("🔔 Уведомления", callback_data="toggle_notifications")],
+        [InlineKeyboardButton("🎯 Сложность", callback_data="change_difficulty")],
+        [InlineKeyboardButton("🎴 Карточек за раз", callback_data="change_session_size")],
+        [InlineKeyboardButton("⏰ Напоминания", callback_data="change_reminder")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return SETTINGS
+
+# ==================== ПОМОЩЬ ====================
+
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Помощь"""
+    query = update.callback_query
+    
+    text = """
+❓ *Помощь по боту*
+
+*Команды:*
+/start - Главное меню
+/decks - Мои колоды
+/stats - Статистика
+/help - Эта помощь
+
+*Режимы обучения:*
+🎴 *Карточки* - смотрите вопрос, переворачивайте, оценивайте знание
+✍️ *Письменный* - вводите ответ, проверяется автоматически
+🎯 *Тест* - выбирайте из 4 вариантов
+🎮 *Смешанный* - разные режимы для разнообразия
+🧠 *Интервалы* - умное повторение по алгоритму
+
+*Советы:*
+• Учите каждый день для поддержания серии 🔥
+• Используйте разные режимы для лучшего запоминания
+• Добавляйте свои карточки для персонализации
+• Проверяйте статистику для отслеживания прогресса
+    """
+    
+    keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return MAIN_MENU
+
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена действия"""
+    await update.message.reply_text("❌ Действие отменено", reply_markup=get_main_menu_keyboard())
+    return MAIN_MENU
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик сообщений вне режимов"""
+    # Проверяем, есть ли активная сессия обучения
     user_id = update.effective_user.id
-    text = update.message.text
-    state = user_states.get(user_id, {})
-    mode = state.get('mode')
+    session = context.user_data.get('study_session')
     
-    if mode == 'creating_deck':
-        deck_id = db.create_deck(user_id, text)
-        user_states[user_id] = {'mode': 'adding_cards', 'deck_id': deck_id, 'deck_name': text}
-        await update.message.reply_text(
-            f"✅ Колода '{text}' создана!\n\n"
-            f"Теперь добавляйте карточки.\n"
-            f"Формат: *Вопрос | Ответ*\n\n"
-            f"Пример: What is 2+2? | 4\n\n"
-            f"Введите 'готово' когда закончите."
-        )
+    if session and session.get('mode') == 'write':
+        return await check_write_answer(update, context)
     
-    elif mode == 'adding_cards':
-        if text.lower() == 'готово':
-            deck_id = state['deck_id']
-            deck_info = db.get_deck_info(deck_id)
-            text_reply = f"""
-✅ *Колода создана успешно!*
-
-📖 {state['deck_name']}
-📝 Карточек добавлено: {deck_info['card_count']}
-
-Что дальше?
-            """
-            keyboard = [
-                [InlineKeyboardButton("🎓 Учиться", callback_data=f"study_{deck_id}")],
-                [InlineKeyboardButton("➕ Добавить еще", callback_data=f"add_card_{deck_id}")],
-                [InlineKeyboardButton("📚 Мои колоды", callback_data="view_decks")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(text_reply, reply_markup=reply_markup, parse_mode="Markdown")
-            user_states[user_id] = {'mode': 'main'}
-        
-        elif '|' in text:
-            parts = text.split('|')
-            if len(parts) == 2:
-                question = parts[0].strip()
-                answer = parts[1].strip()
-                if question and answer:
-                    db.add_card(state['deck_id'], question, answer)
-                    await update.message.reply_text(
-                        f"✅ Карточка добавлена!\n\n❓ {question}\n✏️ {answer}\n\nДобавьте еще или введите 'готово'"
-                    )
-        else:
-            await update.message.reply_text("Неправильный формат! Используйте: *Вопрос | Ответ*")
+    # Если нет активной сессии, показываем меню
+    await update.message.reply_text(
+        "Используйте меню для навигации:",
+        reply_markup=get_main_menu_keyboard()
+    )
+    return MAIN_MENU
