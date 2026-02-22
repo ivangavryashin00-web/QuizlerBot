@@ -3,8 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
 from database import Database
 from handlers import (
-    start, help_command, create_deck, add_card, view_decks, 
-    study_mode, delete_deck, edit_card, view_stats,
+    start, help_command, view_decks, view_stats,
     button_callback, message_handler
 )
 
