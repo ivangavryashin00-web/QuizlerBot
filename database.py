@@ -68,9 +68,10 @@ class Database:
                 FOREIGN KEY (deck_id) REFERENCES decks(deck_id)
             )
         ''')
-                # ===== НОВЫЕ ТАБЛИЦЫ ДЛЯ РАСШИРЕННОГО ФУНКЦИОНАЛА =====
         
-        # Таблица прогресса карточек (интервальное повторение)
+        # ===== НОВЫЕ ТАБЛИЦЫ =====
+        
+        # Таблица прогресса карточек
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS card_progress (
                 progress_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +101,7 @@ class Database:
             )
         ''')
         
-        # Таблица настроек пользователя
+        # Таблица настроек
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id INTEGER PRIMARY KEY,
@@ -111,6 +112,7 @@ class Database:
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
             )
         ''')
+        
         conn.commit()
         conn.close()
     
@@ -133,7 +135,7 @@ class Database:
     
     # ===== РАБОТА С КОЛОДАМИ =====
     def create_deck(self, user_id: int, name: str, description: str = None) -> int:
-        """Создать новую колоду. Возвращает ID колоды"""
+        """Создать новую колоду"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
@@ -170,11 +172,10 @@ class Database:
         return decks
     
     def delete_deck(self, deck_id: int, user_id: int) -> bool:
-        """Удалить колоду (проверка прав)"""
+        """Удалить колоду"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # Проверяем, что колода принадлежит пользователю
         cursor.execute('SELECT user_id FROM decks WHERE deck_id = ?', (deck_id,))
         result = cursor.fetchone()
         
@@ -182,11 +183,9 @@ class Database:
             conn.close()
             return False
         
-        # Удаляем карточки
         cursor.execute('DELETE FROM cards WHERE deck_id = ?', (deck_id,))
-        # Удаляем статистику
         cursor.execute('DELETE FROM learning_stats WHERE deck_id = ?', (deck_id,))
-        # Удаляем колоду
+        cursor.execute('DELETE FROM card_progress WHERE deck_id = ?', (deck_id,))
         cursor.execute('DELETE FROM decks WHERE deck_id = ?', (deck_id,))
         
         conn.commit()
@@ -213,7 +212,7 @@ class Database:
     
     # ===== РАБОТА С КАРТОЧКАМИ =====
     def add_card(self, deck_id: int, question: str, answer: str) -> int:
-        """Добавить карточку. Возвращает ID карточки"""
+        """Добавить карточку"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
@@ -224,7 +223,6 @@ class Database:
         
         card_id = cursor.lastrowid
         
-        # Обновляем время последнего изменения колоды
         cursor.execute('UPDATE decks SET updated_at = ? WHERE deck_id = ?',
                       (datetime.now(), deck_id))
         
@@ -247,7 +245,7 @@ class Database:
         return cards
     
     def get_card(self, card_id: int) -> Optional[Dict]:
-        """Получить информацию о конкретной карточке"""
+        """Получить информацию о карточке"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
@@ -263,6 +261,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('DELETE FROM cards WHERE card_id = ?', (card_id,))
+        cursor.execute('DELETE FROM card_progress WHERE card_id = ?', (card_id,))
         
         conn.commit()
         conn.close()
@@ -315,50 +314,6 @@ class Database:
                 (user_id, deck_id, cards_studied, correct_answers, total_attempts, last_studied)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (user_id, deck_id, 1, correct, total, datetime.now()))
-
-        # ===== ДОБАВИТЬ ЭТО В КОНЕЦ init_db() =====
-
-# Таблица прогресса карточек (SRS - интервальное повторение)
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS card_progress (
-        progress_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        card_id INTEGER NOT NULL,
-        level INTEGER DEFAULT 0,
-        next_review TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        correct_count INTEGER DEFAULT 0,
-        wrong_count INTEGER DEFAULT 0,
-        UNIQUE(user_id, card_id),
-        FOREIGN KEY (user_id) REFERENCES users(user_id),
-        FOREIGN KEY (card_id) REFERENCES cards(card_id)
-    )
-''')
-
-# Таблица геймификации (очки, серии, достижения)
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS user_gamification (
-        user_id INTEGER PRIMARY KEY,
-        total_points INTEGER DEFAULT 0,
-        current_streak INTEGER DEFAULT 0,
-        max_streak INTEGER DEFAULT 0,
-        last_study_date DATE,
-        study_days_streak INTEGER DEFAULT 0,
-        achievements TEXT,
-        FOREIGN KEY (user_id) REFERENCES users(user_id)
-    )
-''')
-
-# Таблица настроек пользователя
-cursor.execute('''
-    CREATE TABLE IF NOT EXISTS user_settings (
-        user_id INTEGER PRIMARY KEY,
-        notifications BOOLEAN DEFAULT 1,
-        difficulty TEXT DEFAULT 'medium',
-        cards_per_session INTEGER DEFAULT 20,
-        reminder_time TEXT DEFAULT '20:00',
-        FOREIGN KEY (user_id) REFERENCES users(user_id)
-    )
-''')
         
         conn.commit()
         conn.close()
@@ -384,7 +339,6 @@ cursor.execute('''
         
         if result:
             stats = dict(result)
-            # Вычисляем процент правильных ответов
             stats['accuracy'] = round(
                 (stats['total_correct'] / stats['total_attempts'] * 100)
                 if stats['total_attempts'] > 0 else 0, 1
