@@ -68,7 +68,49 @@ class Database:
                 FOREIGN KEY (deck_id) REFERENCES decks(deck_id)
             )
         ''')
+                # ===== НОВЫЕ ТАБЛИЦЫ ДЛЯ РАСШИРЕННОГО ФУНКЦИОНАЛА =====
         
+        # Таблица прогресса карточек (интервальное повторение)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS card_progress (
+                progress_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                card_id INTEGER NOT NULL,
+                level INTEGER DEFAULT 0,
+                next_review TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                correct_count INTEGER DEFAULT 0,
+                wrong_count INTEGER DEFAULT 0,
+                UNIQUE(user_id, card_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (card_id) REFERENCES cards(card_id)
+            )
+        ''')
+        
+        # Таблица геймификации
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_gamification (
+                user_id INTEGER PRIMARY KEY,
+                total_points INTEGER DEFAULT 0,
+                current_streak INTEGER DEFAULT 0,
+                max_streak INTEGER DEFAULT 0,
+                last_study_date DATE,
+                study_days_streak INTEGER DEFAULT 0,
+                achievements TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+        
+        # Таблица настроек пользователя
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                notifications BOOLEAN DEFAULT 1,
+                difficulty TEXT DEFAULT 'medium',
+                cards_per_session INTEGER DEFAULT 20,
+                reminder_time TEXT DEFAULT '20:00',
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
         conn.commit()
         conn.close()
     
