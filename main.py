@@ -1,11 +1,7 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
-from database import Database
-from handlers import (
-    start, help_command, view_decks, view_stats,
-    button_callback, message_handler
-)
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 # Настройка логирования
 logging.basicConfig(
@@ -14,18 +10,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Состояния для ConversationHandler
-CREATING_DECK = 1
-ADDING_CARD = 2
-STUDYING = 3
-EDITING_CARD = 4
+# Импортируем обработчики
+from handlers import (
+    start, help_command, view_decks, view_stats,
+    button_callback, message_handler
+)
 
 def main():
     """Запуск бота"""
-    # Замени на свой токен от @BotFather
-    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+    # Получаем токен из переменной окружения
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    if not TOKEN or TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+        logger.error("❌ TELEGRAM_BOT_TOKEN не установлен!")
+        return
     
     # Инициализация базы данных
+    from database import Database
     db = Database()
     db.init_db()
     
@@ -44,15 +45,8 @@ def main():
     # Обработчик сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
     
-    # Обработчик ошибок
-    application.add_error_handler(error_handler)
-    
-    logger.info("Бот запущен!")
+    logger.info("🚀 Бот запущен!")
     application.run_polling()
-
-def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ошибок"""
-    logger.error(f"Update {update} caused error {context.error}")
 
 if __name__ == '__main__':
     main()
