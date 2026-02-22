@@ -1,14 +1,10 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import Database
-from ai_complete import AIAssistant
-from import_export import TextImporter, CardExporter
 from datetime import datetime
 import random
-import os
 
 db = Database()
-ai_complete = AIAssistant(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Сохраняем текущее состояние пользователя
 user_states = {}
@@ -18,7 +14,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     username = update.effective_user.username
     
-    # Добавляем пользователя в БД
     db.add_user(user_id, username)
     user_states[user_id] = {'mode': 'main'}
     
@@ -31,13 +26,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 /help - Справка по командам
 /decks - Мои колоды
 /stats - Статистика обучения
-
-*Что я умею:*
-✅ Создавать колоды карточек
-✅ Добавлять вопрос-ответ
-✅ Учиться в интерактивном режиме
-✅ Отслеживать прогресс
-✅ Удалять и редактировать карточки
 
 Начни с команды /decks или создай новую колоду прямо сейчас! 📚
     """
@@ -70,25 +58,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 2️⃣ *Обучение*
    - Выберите колоду
-   - Режим обучения с картами
    - Переворачивайте карточки
    - Отмечайте "знаю" или "не знаю"
-
-3️⃣ *Управление*
-   - Просмотр карточек
-   - Редактирование карточек
-   - Удаление карточек
-   - Удаление колод
-
-4️⃣ *Статистика*
-   - Количество изученных карточек
-   - Процент правильных ответов
-   - Последнее время обучения
-
-*ИНТЕРФЕЙС:*
-- Кнопки для навигации
-- Инлайн-кнопки для быстрых действий
-- Интерактивные карточки при обучении
 
 Начните обучение прямо сейчас! 🚀
     """
@@ -153,47 +124,62 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = query.from_user.id
     data = query.data
     
-    # Создание колоды
     if data == "create_deck":
         user_states[user_id] = {'mode': 'creating_deck'}
-        await query.edit_message_text(
-            text="📝 Введите название для новой колоды:"
-        )
+        await query.edit_message_text(text="📝 Введите название для новой колоды:")
     
-    # Просмотр колод
     elif data == "view_decks":
         await view_decks_callback(query, user_id)
     
-    # Просмотр конкретной колоды
     elif data.startswith("deck_"):
         deck_id = int(data.split("_")[1])
         await view_deck_detail(query, user_id, deck_id)
     
-    # Обучение
     elif data.startswith("study_"):
         deck_id = int(data.split("_")[1])
         await start_study_mode(query, user_id, deck_id)
     
-    # Редактирование карточки
-    elif data.startswith("edit_card_"):
-        card_id = int(data.split("_")[2])
-        await edit_card_callback(query, user_id, card_id)
+    elif data == "flip_card":
+        await flip_card(query, user_id)
     
-    # Удаление карточки
+    elif data == "answer_correct":
+        await answer_correct(query, user_id)
+    
+    elif data == "answer_wrong":
+        await answer_wrong(query, user_id)
+    
+    elif data == "stop_study":
+        await stop_study(query, user_id)
+    
+    elif data.startswith("add_card_"):
+        deck_id = int(data.split("_")[2])
+        user_states[user_id] = {'mode': 'adding_cards', 'deck_id': deck_id}
+        await query.edit_message_text(
+            "📝 Добавляйте карточки\nФормат: *Вопрос | Ответ*\n\nВведите 'готово' когда закончите."
+        )
+    
+    elif data.startswith("list_cards_"):
+        deck_id = int(data.split("_")[2])
+        await list_cards_callback(query, deck_id)
+    
     elif data.startswith("delete_card_"):
-        card_id = int(data.split("_")[2])
-        await delete_card_callback(query, user_id, card_id)
+        parts = data.split("_")
+        card_id = int(parts[2])
+        deck_id = int(parts[3]) if len(parts) > 3 else None
+        await delete_card_callback(query, user_id, card_id, deck_id)
     
-    # Удаление колоды
     elif data.startswith("delete_deck_"):
         deck_id = int(data.split("_")[2])
         await delete_deck_callback(query, user_id, deck_id)
     
-    # Статистика
+    elif data.startswith("confirm_delete_deck_"):
+        deck_id = int(data.split("_")[3])
+        db.delete_deck(deck_id, user_id)
+        await query.edit_message_text("✅ Колода удалена! 🗑")
+        await view_decks_callback(query, user_id)
+    
     elif data == "stats":
         stats = db.get_user_stats(user_id)
-        last_studied = stats.get('last_studied', 'Никогда')
-        
         text = f"""
 📊 *Ваша статистика:*
 
@@ -203,10 +189,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 📈 Всего попыток: {stats['total_attempts']}
 🎓 Точность: {stats['accuracy']}%
         """
-        
         keyboard = [[InlineKeyboardButton("⬅ Назад", callback_data="view_decks")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def view_decks_callback(query, user_id):
@@ -216,10 +200,7 @@ async def view_decks_callback(query, user_id):
     if not decks:
         keyboard = [[InlineKeyboardButton("➕ Создать", callback_data="create_deck")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-            text="У вас нет колод. Создайте первую! 📚",
-            reply_markup=reply_markup
-        )
+        await query.edit_message_text(text="У вас нет колод. Создайте первую! 📚", reply_markup=reply_markup)
         return
     
     text = "📚 *Ваши колоды:*\n\n"
@@ -227,12 +208,9 @@ async def view_decks_callback(query, user_id):
     
     for deck in decks:
         text += f"📖 *{deck['name']}* - {deck['card_count']} карточек\n"
-        keyboard.append([
-            InlineKeyboardButton(f"👉 {deck['name']}", callback_data=f"deck_{deck['deck_id']}")
-        ])
+        keyboard.append([InlineKeyboardButton(f"👉 {deck['name']}", callback_data=f"deck_{deck['deck_id']}")])
     
     keyboard.append([InlineKeyboardButton("➕ Создать колоду", callback_data="create_deck")])
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
@@ -267,12 +245,9 @@ async def start_study_mode(query, user_id, deck_id):
     cards = db.get_deck_cards(deck_id)
     
     if not cards:
-        await query.edit_message_text(
-            "В этой колоде нет карточек! Добавьте их сначала. 📝"
-        )
+        await query.edit_message_text("В этой колоде нет карточек! Добавьте их сначала. 📝")
         return
     
-    # Перемешиваем карточки
     random.shuffle(cards)
     
     user_states[user_id] = {
@@ -294,34 +269,19 @@ async def show_study_card(query, user_id):
     index = state.get('current_card_index', 0)
     
     if index >= len(cards):
-        # Конец обучения
         await show_study_results(query, user_id)
         return
     
     card = cards[index]
     is_flipped = state.get('flipped', False)
-    
     progress = f"Карточка {index + 1}/{len(cards)}"
     
     if is_flipped:
-        text = f"""
-{progress}
-
-🔄 *ОТВЕТ:*
-
-*{card['answer']}*
-        """
+        text = f"{progress}\n\n🔄 *ОТВЕТ:*\n\n*{card['answer']}*"
     else:
-        text = f"""
-{progress}
-
-❓ *ВОПРОС:*
-
-*{card['question']}*
-        """
+        text = f"{progress}\n\n❓ *ВОПРОС:*\n\n*{card['question']}*"
     
     keyboard = []
-    
     if not is_flipped:
         keyboard.append([InlineKeyboardButton("🔄 Показать ответ", callback_data="flip_card")])
     else:
@@ -329,15 +289,10 @@ async def show_study_card(query, user_id):
             InlineKeyboardButton("❌ Не знаю", callback_data="answer_wrong"),
             InlineKeyboardButton("✅ Знаю", callback_data="answer_correct")
         ])
-    
     keyboard.append([InlineKeyboardButton("⏹ Завершить", callback_data="stop_study")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if query.message:
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    else:
-        await query.answer(text)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def show_study_results(query, user_id):
     """Показать результаты обучения"""
@@ -347,8 +302,6 @@ async def show_study_results(query, user_id):
     deck_id = state.get('deck_id')
     
     percentage = round((correct / total * 100) if total > 0 else 0, 1)
-    
-    # Сохраняем результаты в БД
     db.record_study_session(user_id, deck_id, correct, total)
     
     text = f"""
@@ -365,19 +318,61 @@ async def show_study_results(query, user_id):
     ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    
     user_states.pop(user_id, None)
 
-async def delete_card_callback(query, user_id, card_id):
+async def flip_card(query, user_id):
+    """Переворот карточки"""
+    state = user_states.get(user_id, {})
+    state['flipped'] = not state.get('flipped', False)
+    await show_study_card(query, user_id)
+
+async def answer_correct(query, user_id):
+    """Правильный ответ"""
+    state = user_states.get(user_id, {})
+    state['correct_count'] = state.get('correct_count', 0) + 1
+    state['current_card_index'] = state.get('current_card_index', 0) + 1
+    state['flipped'] = False
+    await show_study_card(query, user_id)
+
+async def answer_wrong(query, user_id):
+    """Неправильный ответ"""
+    state = user_states.get(user_id, {})
+    state['current_card_index'] = state.get('current_card_index', 0) + 1
+    state['flipped'] = False
+    await show_study_card(query, user_id)
+
+async def stop_study(query, user_id):
+    """Завершение обучения"""
+    await show_study_results(query, user_id)
+
+async def list_cards_callback(query, deck_id):
+    """Показать все карточки колоды"""
+    cards = db.get_deck_cards(deck_id)
+    
+    if not cards:
+        await query.edit_message_text("В этой колоде пока нет карточек 📝")
+        return
+    
+    text = "📋 *Все карточки:*\n\n"
+    keyboard = []
+    
+    for i, card in enumerate(cards, 1):
+        text += f"{i}. ❓ {card['question']}\n   ✏️ {card['answer']}\n\n"
+        keyboard.append([InlineKeyboardButton(f"🗑 Удалить #{i}", callback_data=f"delete_card_{card['card_id']}_{deck_id}")])
+    
+    keyboard.append([InlineKeyboardButton("⬅ Назад", callback_data=f"deck_{deck_id}")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def delete_card_callback(query, user_id, card_id, deck_id):
     """Удаление карточки"""
     db.delete_card(card_id)
     await query.edit_message_text("✅ Карточка удалена! 🗑")
-    
-    # Возвращаемся к списку карточек
-    # Получаем deck_id из контекста
-    # Упрощенная версия - просто показываем сообщение
+    if deck_id:
+        await list_cards_callback(query, deck_id)
+    else:
+        await view_decks_callback(query, user_id)
 
 async def delete_deck_callback(query, user_id, deck_id):
     """Удаление колоды с подтверждением"""
@@ -387,36 +382,8 @@ async def delete_deck_callback(query, user_id, deck_id):
             InlineKeyboardButton("❌ Отмена", callback_data=f"deck_{deck_id}")
         ]
     ]
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(
-        "⚠️ Вы уверены? Это удалит колоду и все карточки!",
-        reply_markup=reply_markup
-    )
-
-async def edit_card_callback(query, user_id, card_id):
-    """Редактирование карточки"""
-    card = db.get_card(card_id)
-    
-    if not card:
-        await query.edit_message_text("Карточка не найдена 😕")
-        return
-    
-    user_states[user_id] = {
-        'mode': 'editing_card',
-        'card_id': card_id
-    }
-    
-    text = f"""
-✏️ *Редактирование карточки*
-
-Вопрос: {card['question']}
-Ответ: {card['answer']}
-
-Отправьте новый вопрос (или пропустите):
-    """
-    
-    await query.edit_message_text(text)
+    await query.edit_message_text("⚠️ Вы уверены? Это удалит колоду и все карточки!", reply_markup=reply_markup)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик текстовых сообщений"""
@@ -425,15 +392,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     state = user_states.get(user_id, {})
     mode = state.get('mode')
     
-    # Создание колоды
     if mode == 'creating_deck':
         deck_id = db.create_deck(user_id, text)
-        user_states[user_id] = {
-            'mode': 'adding_cards',
-            'deck_id': deck_id,
-            'deck_name': text
-        }
-        
+        user_states[user_id] = {'mode': 'adding_cards', 'deck_id': deck_id, 'deck_name': text}
         await update.message.reply_text(
             f"✅ Колода '{text}' создана!\n\n"
             f"Теперь добавляйте карточки.\n"
@@ -442,12 +403,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"Введите 'готово' когда закончите."
         )
     
-    # Добавление карточек
     elif mode == 'adding_cards':
         if text.lower() == 'готово':
             deck_id = state['deck_id']
             deck_info = db.get_deck_info(deck_id)
-            
             text_reply = f"""
 ✅ *Колода создана успешно!*
 
@@ -456,16 +415,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 Что дальше?
             """
-            
             keyboard = [
                 [InlineKeyboardButton("🎓 Учиться", callback_data=f"study_{deck_id}")],
                 [InlineKeyboardButton("➕ Добавить еще", callback_data=f"add_card_{deck_id}")],
                 [InlineKeyboardButton("📚 Мои колоды", callback_data="view_decks")]
             ]
-            
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(text_reply, reply_markup=reply_markup, parse_mode="Markdown")
-            
             user_states[user_id] = {'mode': 'main'}
         
         elif '|' in text:
@@ -473,96 +429,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if len(parts) == 2:
                 question = parts[0].strip()
                 answer = parts[1].strip()
-                
-                db.add_card(state['deck_id'], question, answer)
-                await update.message.reply_text(
-                    f"✅ Карточка добавлена!\n\n"
-                    f"❓ {question}\n"
-                    f"✏️ {answer}\n\n"
-                    f"Добавьте еще или введите 'готово'"
-                )
+                if question and answer:
+                    db.add_card(state['deck_id'], question, answer)
+                    await update.message.reply_text(
+                        f"✅ Карточка добавлена!\n\n❓ {question}\n✏️ {answer}\n\nДобавьте еще или введите 'готово'"
+                    )
         else:
-            await update.message.reply_text(
-                "Неправильный формат! Используйте: *Вопрос | Ответ*"
-            )
-
-# Дополнительные функции для callback обработки
-async def flip_card(query):
-    """Переворот карточки"""
-    user_id = query.from_user.id
-    state = user_states.get(user_id, {})
-    state['flipped'] = not state.get('flipped', False)
-    await show_study_card(query, user_id)
-
-async def answer_correct(query):
-    """Правильный ответ"""
-    user_id = query.from_user.id
-    state = user_states.get(user_id, {})
-    state['correct_count'] = state.get('correct_count', 0) + 1
-    state['current_card_index'] = state.get('current_card_index', 0) + 1
-    state['flipped'] = False
-    await show_study_card(query, user_id)
-
-async def answer_wrong(query):
-    """Неправильный ответ"""
-    user_id = query.from_user.id
-    state = user_states.get(user_id, {})
-    state['current_card_index'] = state.get('current_card_index', 0) + 1
-    state['flipped'] = False
-    await show_study_card(query, user_id)
-
-async def stop_study(query):
-    """Завершение обучения"""
-    user_id = query.from_user.id
-    await show_study_results(query, user_id)
-
-# Добавляем обработчик для расширенных callback'ов
-async def extended_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Расширенный обработчик кнопок"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    data = query.data
-    
-    if data == "flip_card":
-        await flip_card(query)
-    elif data == "answer_correct":
-        await answer_correct(query)
-    elif data == "answer_wrong":
-        await answer_wrong(query)
-    elif data == "stop_study":
-        await stop_study(query)
-    elif data.startswith("add_card_"):
-        deck_id = int(data.split("_")[2])
-        user_states[user_id] = {
-            'mode': 'adding_cards',
-            'deck_id': deck_id
-        }
-        await query.edit_message_text(
-            "📝 Добавляйте карточки\n"
-            "Формат: *Вопрос | Ответ*\n\n"
-            "Введите 'готово' когда закончите."
-        )
-    elif data.startswith("list_cards_"):
-        deck_id = int(data.split("_")[2])
-        cards = db.get_deck_cards(deck_id)
-        
-        text = "📋 *Все карточки:*\n\n"
-        keyboard = []
-        
-        for i, card in enumerate(cards, 1):
-            text += f"{i}. ❓ {card['question']}\n   ✏️ {card['answer']}\n\n"
-            keyboard.append([
-                InlineKeyboardButton(f"Удалить #{i}", callback_data=f"delete_card_{deck_id}_{card['card_id']}")
-            ])
-        
-        keyboard.append([InlineKeyboardButton("⬅ Назад", callback_data=f"deck_{deck_id}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    elif data.startswith("confirm_delete_deck_"):
-        deck_id = int(data.split("_")[3])
-        db.delete_deck(deck_id, user_id)
-        await query.edit_message_text("✅ Колода удалена! 🗑")
-        await view_decks_callback(query, user_id)
+            await update.message.reply_text("Неправильный формат! Используйте: *Вопрос | Ответ*")
